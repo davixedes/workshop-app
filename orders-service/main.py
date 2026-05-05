@@ -73,7 +73,7 @@ def startup():
 def root():
     return {
         "service": "orders-service",
-        "version": os.environ.get("APP_VERSION", "1.0.0"),
+        "version": os.environ.get("APP_VERSION", "2.0.0"),
         "host": socket.gethostname(),
         "queue": SQS_QUEUE_URL or "not configured",
         "endpoints": ["POST /orders", "GET /orders", "GET /orders/{id}", "GET /health"],
