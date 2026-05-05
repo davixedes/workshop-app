@@ -32,7 +32,7 @@ Ao fazer push no GitHub dentro da pasta `orders-service/`, a pipeline:
 
 ## Pré-requisitos
 
-- Conta AWS com permissão de Admin (ou permissões para IAM, ECS, ECR, CodeBuild, CodeDeploy, CodePipeline, CodeConnections, RDS, SQS, CloudFormation, ALB)
+- Conta AWS com permissão de Admin (ou permissões para IAM, ECS, ECR, CodeBuild, CodePipeline, CodeConnections, RDS, SQS, CloudFormation, ALB)
 - Uma VPC com pelo menos 2 subnets públicas (a default VPC funciona)
 - Git e Docker instalados localmente
 - Conta GitHub com um repositório criado para o workshop
@@ -55,8 +55,7 @@ workshop-app/
 ├── cloudformation-db.yml       # RDS PostgreSQL via CloudFormation
 ├── cloudformation-infra.yml    # ECR + SQS + IAM Roles + ALB + ECS Cluster via CloudFormation
 ├── buildspec.yml               # instruções para o CodeBuild (orders-service)
-├── taskdef.json                # template da Task Definition do ECS (orders-service)
-└── appspec.yaml                # instruções para o CodeDeploy
+└── taskdef.json                # template da Task Definition do ECS (orders-service)
 ```
 
 ---
@@ -73,7 +72,7 @@ workshop-app/
    cd workshop-app
    # copie as pastas: orders-service/, inventory-service/
    # copie os arquivos: docker-compose.yml, cloudformation-*.yml,
-   #                    buildspec.yml, taskdef.json, appspec.yaml
+   #                    buildspec.yml, taskdef.json
    ```
 3. Faça o primeiro push:
    ```bash
@@ -365,7 +364,7 @@ O role do CodeBuild precisa de permissão para fazer push no ECR.
 16. Deploy provider: **Amazon ECS**
 17. Cluster name: `workshop-cluster`
 18. Service name: `workshop-orders-service`
-19. Image definitions file: `imageDetail.json`
+19. Image definitions file: `imagedefinitions.json`
 20. Clique em **Next** → **Create pipeline**
 
 ---
