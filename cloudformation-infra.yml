@@ -85,6 +85,20 @@ Resources:
                   - sqs:GetQueueAttributes
                 Resource: !GetAtt OrdersQueue.Arn
 
+  ECSInfraRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workshop-ecs-infra-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSInfrastructureRolePolicyForLoadBalancers
+
   # -------------------------------------------------------
   # Security Groups
   # -------------------------------------------------------
@@ -196,6 +210,36 @@ Resources:
           TargetGroupArn: !Ref TargetGroupGreen
 
   # -------------------------------------------------------
+  # Listener Rules (necessários para o Blue/Green nativo do ECS)
+  # -------------------------------------------------------
+
+  ListenerRuleProd:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ListenerProd
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - "/*"
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupBlue
+
+  ListenerRuleTest:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ListenerTest
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - "/*"
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupGreen
+
+  # -------------------------------------------------------
   # ECS Cluster
   # -------------------------------------------------------
 
@@ -235,6 +279,18 @@ Outputs:
 
   ECSClusterName:
     Value: !Ref ECSCluster
+
+  ECSInfraRoleArn:
+    Description: Role para o ECS gerenciar o ALB no Blue/Green nativo
+    Value: !GetAtt ECSInfraRole.Arn
+
+  ListenerRuleProdArn:
+    Description: ARN da rule de producao (porta 80) — use no advancedConfiguration do ECS Service
+    Value: !Ref ListenerRuleProd
+
+  ListenerRuleTestArn:
+    Description: ARN da rule de teste (porta 8080) — use no advancedConfiguration do ECS Service
+    Value: !Ref ListenerRuleTest
 
   ECROrdersURI:
     Value: !GetAtt ECROrders.RepositoryUri

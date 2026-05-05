@@ -1,11 +1,11 @@
-# Workshop: Pipeline CI/CD com GitHub + CodeBuild + CodeDeploy + ECS (Fargate)
+# Workshop: Pipeline CI/CD com GitHub + CodeBuild + ECS (Fargate)
 
 ## O que vamos construir
 
 ```
-[GitHub] → [CodePipeline] → [CodeBuild] → [CodeDeploy] → [ECS Fargate]
- (fonte)                     (build +        (Blue/Green    (app rodando)
-                              push ECR)       no cluster)
+[GitHub] → [CodePipeline] → [CodeBuild] → [ECS Fargate]
+ (fonte)                     (build +       (Blue/Green
+                              push ECR)      nativo)
 ```
 
 O app é um e-commerce com 2 microserviços em Python (FastAPI) que se comunicam via **AWS SQS** e persistem dados no PostgreSQL (RDS).
@@ -13,7 +13,7 @@ O app é um e-commerce com 2 microserviços em Python (FastAPI) que se comunicam
 Ao fazer push no GitHub dentro da pasta `orders-service/`, a pipeline:
 1. Detecta a mudança automaticamente (filtro de path no CodePipeline V2)
 2. Builda a imagem Docker do `orders-service` e sobe no ECR
-3. Faz deploy Blue/Green no ECS via CodeDeploy
+3. Faz deploy Blue/Green no ECS (nativo — sem CodeDeploy)
 
 **Arquitetura dos serviços:**
 ```
@@ -129,6 +129,9 @@ O arquivo `cloudformation-infra.yml` provisiona **tudo de uma vez**:
 | `ECSTaskRoleArn` | `taskdef.json` → campo `taskRoleArn` |
 | `ECSTaskSecurityGroupId` | ECS Service → Networking |
 | `ECSClusterName` | ECS Service → Cluster |
+| `ECSInfraRoleArn` | ECS Service → `advancedConfiguration.roleArn` |
+| `ListenerRuleProdArn` | ECS Service → `advancedConfiguration.productionListenerRule` |
+| `ListenerRuleTestArn` | ECS Service → `advancedConfiguration.testListenerRule` |
 | `ECROrdersURI` | referência: `ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/workshop-orders` |
 
 **Deploy via CLI (alternativa):**
@@ -223,36 +226,61 @@ git push
 
 ---
 
-### 2.2 Criar ECS Service
+### 2.2 Criar ECS Service (Blue/Green nativo)
 
-> O Service precisa usar **CodeDeploy** como deployment controller para o Blue/Green funcionar.
+> O ECS suporta Blue/Green nativamente desde 2024 — sem CodeDeploy. O serviço gerencia o traffic shifting diretamente via ALB.
 
-1. Acesse **ECS** → **Clusters** → `workshop-cluster` → **Create** (em Services)
-2. **Compute options**: Launch type → **FARGATE**
-3. **Task definition**: `workshop-orders` (a que acabou de criar)
-4. **Service name**: `workshop-orders-service`
-5. **Desired tasks**: `2`
+**A. Coletar os ARNs dos Outputs do CloudFormation:**
+```bash
+aws cloudformation describe-stacks --stack-name workshop-infra \
+  --query "Stacks[0].Outputs" --output table
+```
 
-6. Em **Deployment options**:
-   - Deployment type: **Blue/green deployment (powered by AWS CodeDeploy)**
-   - Service role for CodeDeploy: se não tiver, AWS vai criar automaticamente (`AWSCodeDeployRoleForECS`)
+**B. Criar o arquivo `service.json`** com os valores dos Outputs (substitua os placeholders):
+```json
+{
+  "cluster": "workshop-cluster",
+  "serviceName": "workshop-orders-service",
+  "taskDefinition": "workshop-orders",
+  "desiredCount": 2,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["subnet-AAAA", "subnet-BBBB"],
+      "securityGroups": ["ECSTaskSecurityGroupId"],
+      "assignPublicIp": "ENABLED"
+    }
+  },
+  "loadBalancers": [
+    {
+      "targetGroupArn": "TG_BLUE_ARN",
+      "containerName": "orders-service",
+      "containerPort": 3001,
+      "advancedConfiguration": {
+        "alternateTargetGroupArn": "TG_GREEN_ARN",
+        "productionListenerRule": "ListenerRuleProdArn",
+        "testListenerRule": "ListenerRuleTestArn",
+        "roleArn": "ECSInfraRoleArn"
+      }
+    }
+  ],
+  "deploymentConfiguration": {
+    "strategy": "BLUE_GREEN",
+    "bakeTimeInMinutes": 5
+  }
+}
+```
 
-7. Em **Networking**:
-   - VPC: sua VPC
-   - Subnets: selecione as subnets (pode usar as públicas se não tiver NAT Gateway)
-   - Security group: selecione o `ECSTaskSecurityGroupId` (Output do `workshop-infra`)
-   - Auto-assign public IP: **ENABLED** (se usando subnets públicas)
+> Substitua cada valor pelo Output correspondente do stack `workshop-infra`. Para os Target Group ARNs:
+> ```bash
+> aws elbv2 describe-target-groups --names workshop-tg-blue workshop-tg-green \
+>   --query "TargetGroups[*].[TargetGroupName,TargetGroupArn]" --output table
+> ```
 
-8. Em **Load balancing**:
-   - Load balancer type: **Application Load Balancer**
-   - Load balancer: `workshop-alb`
-   - Container: `orders-service 3001`
-   - Production listener: **80**
-   - Test listener: **8080**
-   - Target group 1 (Blue): `workshop-tg-blue`
-   - Target group 2 (Green): `workshop-tg-green`
-
-9. Clique em **Create**
+**C. Criar o serviço:**
+```bash
+aws ecs create-service --cli-input-json file://service.json
+```
 
 > O service vai falhar no primeiro deploy porque a imagem `<IMAGE1_NAME>` não é válida — isso é esperado. A pipeline vai corrigir isso na primeira execução.
 
@@ -309,20 +337,9 @@ O role do CodeBuild precisa de permissão para fazer push no ECR.
 
 ---
 
-## PARTE 4 — CodeDeploy
+## PARTE 4 — CodePipeline
 
-> O CodeDeploy para ECS foi criado automaticamente quando criamos o ECS Service com Blue/Green. Vamos apenas verificar.
-
-1. Acesse **CodeDeploy** → **Applications**
-2. Verifique se existe uma application com nome similar a `AppECS-workshop-cluster-workshop-orders-service`
-3. Clique nela → veja o **Deployment group** criado
-4. Anote o nome exato da **Application** e do **Deployment group** (você vai precisar na pipeline)
-
----
-
-## PARTE 5 — CodePipeline
-
-### 5.1 Criar a pipeline
+### 4.1 Criar a pipeline
 
 1. Acesse **CodePipeline** → **Pipelines** → **Create pipeline**
 2. Pipeline name: `workshop-orders-pipeline`
@@ -345,23 +362,15 @@ O role do CodeBuild precisa de permissão para fazer push no ECR.
 15. Clique em **Next**
 
 **Stage: Deploy**
-16. Deploy provider: **Amazon ECS (Blue/Green)**
-17. Application name: (selecione o que apareceu no CodeDeploy, ex: `AppECS-workshop-cluster-workshop-orders-service`)
-18. Deployment group: (selecione o deployment group correspondente)
-19. Task definition:
-    - Artifact: **BuildArtifact**
-    - File name: `taskdef.json`
-20. AWS CodeDeploy AppSpec file:
-    - Artifact: **BuildArtifact**
-    - File name: `appspec.yaml`
-21. Dynamically update task definition image:
-    - Input artifact with image details: **BuildArtifact**
-    - Placeholder text in the task definition: `IMAGE1_NAME`
-22. Clique em **Next** → **Create pipeline**
+16. Deploy provider: **Amazon ECS**
+17. Cluster name: `workshop-cluster`
+18. Service name: `workshop-orders-service`
+19. Image definitions file: `imageDetail.json`
+20. Clique em **Next** → **Create pipeline**
 
 ---
 
-### 5.2 Configurar filtro de path (CodePipeline V2)
+### 4.2 Configurar filtro de path (CodePipeline V2)
 
 Por padrão, qualquer push no repositório dispara a pipeline. Para que ela dispare **apenas quando arquivos dentro de `orders-service/` forem modificados**, configure um filtro de path:
 
@@ -376,16 +385,16 @@ Por padrão, qualquer push no repositório dispara a pipeline. Para que ela disp
 
 ---
 
-## PARTE 6 — Testar
+## PARTE 5 — Testar
 
-### 6.1 Primeiro deploy automático
+### 5.1 Primeiro deploy automático
 
 Ao criar a pipeline, ela já vai rodar automaticamente com o código atual do GitHub.
 
 Acompanhe em **CodePipeline** → `workshop-orders-pipeline`:
 - **Source**: ✅ puxou o código
 - **Build**: ✅ buildou a imagem Python e enviou ao ECR
-- **Deploy**: ✅ CodeDeploy iniciou o Blue/Green
+- **Deploy**: ✅ ECS iniciou o Blue/Green nativo
 
 Ao finalizar, acesse o DNS do ALB (Output `ALBDNSName` do `workshop-infra`):
 ```
@@ -404,7 +413,7 @@ Resposta esperada em `GET /`:
 
 ---
 
-### 6.2 Testar o fluxo completo via API
+### 5.2 Testar o fluxo completo via API
 
 **Criar um pedido** (persiste no PostgreSQL e publica na fila SQS):
 ```bash
@@ -444,7 +453,7 @@ http://SEU_ALB/docs
 
 ---
 
-### 6.3 Testar um novo deploy (mudança de código)
+### 5.3 Testar um novo deploy (mudança de código)
 
 1. Edite `orders-service/main.py` e mude a versão:
    ```python
@@ -457,15 +466,15 @@ http://SEU_ALB/docs
    git push
    ```
 3. A pipeline vai disparar automaticamente (filtro de path detecta mudança em `orders-service/`)
-4. Observe no CodeDeploy o deploy Blue/Green:
+4. Observe o deploy Blue/Green no ECS:
    - Tasks novas sobem no Target Group Green
    - Tráfego vira para o Green
-   - Tasks antigas (Blue) são encerradas após 5 minutos
+   - Tasks antigas (Blue) são encerradas após o bake time (5 minutos)
 5. Acesse o ALB novamente e veja a versão atualizada no campo `version`
 
 ---
 
-## PARTE 7 — DESAFIO: Pipeline do inventory-service
+## PARTE 6 — DESAFIO: Pipeline do inventory-service
 
 > Esta parte não tem passo a passo guiado. O objetivo é você aplicar o que aprendeu para montar a pipeline completa do `inventory-service`.
 
@@ -503,7 +512,7 @@ Monte a pipeline completa para o `inventory-service` seguindo o mesmo padrão do
 
 > **Dica 2 — Task Definition sem ALB:** Se optar por não colocar o inventory-service atrás de um ALB, crie o ECS Service sem load balancer. O service vai rodar normalmente — ele só não vai receber tráfego HTTP externo, mas o consumer SQS interno funciona independentemente.
 
-> **Dica 3 — CodeDeploy:** Para usar Blue/Green, o ECS Service precisa de Target Groups e Listeners. Se você optar por não usar ALB no inventory-service, pode usar **Rolling update** como deployment type (mais simples, sem CodeDeploy). A desvantagem é não ter zero-downtime garantido.
+> **Dica 3 — Blue/Green vs Rolling:** Para usar Blue/Green nativo, o ECS Service precisa de Target Groups, Listeners e Listener Rules (igual ao orders-service). Se optar por não usar ALB no inventory-service, use **Rolling update** como deployment strategy (mais simples). A desvantagem é não ter zero-downtime garantido.
 
 > **Dica 4 — imageDetail.json:** Ao criar a pipeline, o campo "Placeholder text in the task definition" deve ser `IMAGE1_NAME` — igual ao orders-service.
 
@@ -511,7 +520,7 @@ Monte a pipeline completa para o `inventory-service` seguindo o mesmo padrão do
 
 Após o deploy, você pode verificar que o inventory-service está consumindo a fila:
 
-1. Crie um pedido no orders-service (como no passo 6.2)
+1. Crie um pedido no orders-service (como no passo 5.2)
 2. Acesse **SQS** → `workshop-orders` → **Send and receive messages** → **Poll for messages**
    - Se o inventory-service estiver rodando, as mensagens devem ser consumidas rapidamente
 3. Verifique os logs no CloudWatch: `/ecs/workshop-app` → stream `inventory/*`
@@ -528,8 +537,7 @@ Após o deploy, você pode verificar que o inventory-service está consumindo a 
 | `cloudformation-db.yml` | CloudFormation | Provisiona RDS PostgreSQL + Security Group |
 | `cloudformation-infra.yml` | CloudFormation | ECR + SQS + IAM Roles + ALB + Target Groups + ECS Cluster |
 | `buildspec.yml` | CodeBuild | Login ECR, docker build do `orders-service`, docker push, gera `imageDetail.json` |
-| `taskdef.json` | CodePipeline/CodeDeploy | Template da Task Definition. `<IMAGE1_NAME>` é substituído automaticamente pela URI da imagem nova |
-| `appspec.yaml` | CodeDeploy | Diz ao CodeDeploy qual container/porta usar (`orders-service:3001`) |
+| `taskdef.json` | CodePipeline/ECS | Template da Task Definition. `<IMAGE1_NAME>` é substituído automaticamente pela URI da imagem nova |
 | `docker-compose.yml` | Local | Sobe Postgres + LocalStack (SQS) + 2 serviços para desenvolvimento local |
 
 ---
@@ -572,7 +580,10 @@ open http://localhost:3001/docs
 → O role do CodeBuild não tem permissão no ECR. Adicione `AmazonEC2ContainerRegistryPowerUser` ao role.
 
 **Deploy falha com "The ECS service cannot be updated"**
-→ Verifique se o ECS Service foi criado com Deployment controller = CODE_DEPLOY.
+→ Verifique se o ECS Service foi criado com `deploymentConfiguration.strategy = BLUE_GREEN` e se os ARNs do `advancedConfiguration` estão corretos.
+
+**Deploy falha com "unable to update the service because the blue/green deployment is not configured"**
+→ O service foi criado sem Blue/Green (Rolling update). Delete e recrie usando o `service.json` do passo 2.2.
 
 **Task não sobe (health check failing)**
 → Verifique se o Security Group das tasks (`ECSTaskSecurityGroupId`) permite TCP 3001 vindo do SG do ALB. O health check usa `GET /health`.
