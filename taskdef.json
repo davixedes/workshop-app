@@ -4,8 +4,8 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "EXECUTION_ROLE_ARN",
-  "taskRoleArn": "TASK_ROLE_ARN",
+  "executionRoleArn": "arn:aws:iam::613981118194:role/workshop-ecs-execution-role",
+  "taskRoleArn": "arn:aws:iam::613981118194:role/workshop-ecs-task-role",
   "containerDefinitions": [
     {
       "name": "orders-service",
@@ -18,8 +18,8 @@
         }
       ],
       "environment": [
-        { "name": "DATABASE_URL",      "value": "postgresql://workshop:DB_PASSWORD@RDS_ENDPOINT:5432/workshop" },
-        { "name": "SQS_QUEUE_URL",     "value": "SQS_QUEUE_URL" },
+        { "name": "DATABASE_URL",      "value": "postgresql://workshop:davidatabase@RDS_ENDPOINT:5432/workshop" },
+        { "name": "SQS_QUEUE_URL",     "value": "https://sqs.us-east-1.amazonaws.com/613981118194/workshop-orders" },
         { "name": "AWS_DEFAULT_REGION","value": "us-east-1" }
       ],
       "logConfiguration": {
