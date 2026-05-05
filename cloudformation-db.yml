@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Workshop - RDS PostgreSQL para os microservicos
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID da VPC onde o RDS sera criado
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Pelo menos 2 subnets (privadas ou publicas) para o DB Subnet Group
+
+  VpcCidr:
+    Type: String
+    Default: 172.31.0.0/16
+    Description: CIDR da VPC (default VPC usa 172.31.0.0/16). Permite acesso das tasks ECS ao RDS.
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Senha do banco (minimo 8 caracteres). Guarde bem - voce vai precisar depois.
+
+Resources:
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Workshop DB Subnet Group
+      SubnetIds: !Ref SubnetIds
+      Tags:
+        - Key: Name
+          Value: workshop-db-subnet-group
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite acesso ao RDS a partir da VPC
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: workshop-db-sg
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceIdentifier: workshop-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '16'
+      MasterUsername: workshop
+      MasterUserPassword: !Ref DBPassword
+      DBName: workshop
+      AllocatedStorage: 20
+      StorageType: gp2
+      MultiAZ: false
+      PubliclyAccessible: false
+      DeletionProtection: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: workshop-db
+
+Outputs:
+  DBEndpoint:
+    Description: Endpoint do RDS (use no DATABASE_URL)
+    Value: !GetAtt DBInstance.Endpoint.Address
+
+  DBPort:
+    Value: !GetAtt DBInstance.Endpoint.Port
+
+  DBName:
+    Value: workshop
+
+  DBUser:
+    Value: workshop
+
+  DatabaseURL:
+    Description: Cole esse valor no taskdef.json (substitua PASSWORD pela senha escolhida)
+    Value: !Sub "postgresql://workshop:PASSWORD@${DBInstance.Endpoint.Address}:5432/workshop"
+
+  DBSecurityGroupId:
+    Description: ID do Security Group do RDS (adicione como inbound no SG das tasks ECS)
+    Value: !GetAtt DBSecurityGroup.GroupId

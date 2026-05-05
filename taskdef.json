@@ -1,0 +1,35 @@
+{
+  "family": "workshop-orders",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "EXECUTION_ROLE_ARN",
+  "taskRoleArn": "TASK_ROLE_ARN",
+  "containerDefinitions": [
+    {
+      "name": "orders-service",
+      "image": "<IMAGE1_NAME>",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3001,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "DATABASE_URL",      "value": "postgresql://workshop:DB_PASSWORD@RDS_ENDPOINT:5432/workshop" },
+        { "name": "SQS_QUEUE_URL",     "value": "SQS_QUEUE_URL" },
+        { "name": "AWS_DEFAULT_REGION","value": "us-east-1" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/workshop-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "orders"
+        }
+      }
+    }
+  ]
+}

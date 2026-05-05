@@ -1,0 +1,33 @@
+version: 0.2
+
+# Variaveis de ambiente configuradas no projeto CodeBuild:
+#   AWS_ACCOUNT_ID       ex: 123456789012
+#   AWS_DEFAULT_REGION   ex: us-east-1
+#   ECR_REPO_NAME        ex: workshop-orders
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-8)
+
+  build:
+    commands:
+      - echo Building orders-service...
+      - docker build -f orders-service/Dockerfile -t $IMAGE_URI:$IMAGE_TAG -t $IMAGE_URI:latest orders-service/
+
+  post_build:
+    commands:
+      - echo Pushing image to ECR...
+      - docker push $IMAGE_URI:$IMAGE_TAG
+      - docker push $IMAGE_URI:latest
+      - printf '{"ImageURI":"%s"}' "$IMAGE_URI:$IMAGE_TAG" > imageDetail.json
+      - echo Done.
+
+artifacts:
+  files:
+    - imageDetail.json
+    - appspec.yaml
+    - taskdef.json

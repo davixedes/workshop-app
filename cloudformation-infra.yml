@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Workshop - ECR + SQS + IAM Roles + ALB + ECS Cluster + Security Groups
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: ID da VPC
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Pelo menos 2 subnets publicas para o ALB
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets para as tasks ECS
+
+Resources:
+
+  # -------------------------------------------------------
+  # ECR Repositories
+  # -------------------------------------------------------
+
+  ECROrders:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: workshop-orders
+      EmptyOnDelete: true
+
+  ECRInventory:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: workshop-inventory
+      EmptyOnDelete: true
+
+  # -------------------------------------------------------
+  # SQS Queue
+  # -------------------------------------------------------
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: workshop-orders
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 86400
+
+  # -------------------------------------------------------
+  # IAM Roles
+  # -------------------------------------------------------
+
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workshop-ecs-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workshop-ecs-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt OrdersQueue.Arn
+
+  # -------------------------------------------------------
+  # Security Groups
+  # -------------------------------------------------------
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB - permite HTTP externo nas portas 80 e 8080
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: workshop-alb-sg
+
+  ECSTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Tasks - permite porta 3001 vindo do ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          SourceSecurityGroupId: !GetAtt ALBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: workshop-ecs-task-sg
+
+  # -------------------------------------------------------
+  # Application Load Balancer
+  # -------------------------------------------------------
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: workshop-alb
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !GetAtt ALBSecurityGroup.GroupId
+      Tags:
+        - Key: Name
+          Value: workshop-alb
+
+  # -------------------------------------------------------
+  # Target Groups
+  # -------------------------------------------------------
+
+  TargetGroupBlue:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: workshop-tg-blue
+      Protocol: HTTP
+      Port: 3001
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  TargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: workshop-tg-green
+      Protocol: HTTP
+      Port: 3001
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  # -------------------------------------------------------
+  # Listeners
+  # -------------------------------------------------------
+
+  ListenerProd:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupBlue
+
+  ListenerTest:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroupGreen
+
+  # -------------------------------------------------------
+  # ECS Cluster
+  # -------------------------------------------------------
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: workshop-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+Outputs:
+  ALBDNSName:
+    Description: URL do app
+    Value: !Sub "http://${ALB.DNSName}"
+
+  SQSQueueUrl:
+    Description: URL da fila SQS — use no taskdef.json
+    Value: !Ref OrdersQueue
+
+  SQSQueueArn:
+    Value: !GetAtt OrdersQueue.Arn
+
+  ECSExecutionRoleArn:
+    Description: ARN do Execution Role — use no taskdef.json (executionRoleArn)
+    Value: !GetAtt ECSExecutionRole.Arn
+
+  ECSTaskRoleArn:
+    Description: ARN do Task Role — use no taskdef.json (taskRoleArn)
+    Value: !GetAtt ECSTaskRole.Arn
+
+  ECSTaskSecurityGroupId:
+    Description: SG das tasks ECS — use ao criar o ECS Service
+    Value: !GetAtt ECSTaskSecurityGroup.GroupId
+
+  ECSClusterName:
+    Value: !Ref ECSCluster
+
+  ECROrdersURI:
+    Value: !GetAtt ECROrders.RepositoryUri
+
+  ECRInventoryURI:
+    Value: !GetAtt ECRInventory.RepositoryUri
