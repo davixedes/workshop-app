@@ -416,7 +416,7 @@ Resposta esperada em `GET /`:
 
 **Criar um pedido** (persiste no PostgreSQL e publica na fila SQS):
 ```bash
-curl -X POST http://SEU_ALB/orders \
+curl -X POST http://workshop-alb-1713889946.us-east-1.elb.amazonaws.com/orders \
   -H "Content-Type: application/json" \
   -d '{"product":"notebook","quantity":2,"customer":"joao@email.com"}'
 ```
@@ -452,24 +452,65 @@ http://SEU_ALB/docs
 
 ---
 
-### 5.3 Testar um novo deploy (mudança de código)
+### 5.3 Sentir o Blue/Green na prática
 
-1. Edite `orders-service/main.py` e mude a versão:
-   ```python
-   "version": os.environ.get("APP_VERSION", "2.0.0"),
-   ```
-2. Faça push:
-   ```bash
-   git add orders-service/main.py
-   git commit -m "bump version to 2.0.0"
-   git push
-   ```
-3. A pipeline vai disparar automaticamente (filtro de path detecta mudança em `orders-service/`)
-4. Observe o deploy Blue/Green no ECS:
-   - Tasks novas sobem no Target Group Green
-   - Tráfego vira para o Green
-   - Tasks antigas (Blue) são encerradas após o bake time (5 minutos)
-5. Acesse o ALB novamente e veja a versão atualizada no campo `version`
+**Passo 1 — Abra um terminal e inicie o polling do ALB:**
+```bash
+while true; do
+  RESP=$(curl -s http://SEU_ALB/)
+  VERSION=$(echo $RESP | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['version'])")
+  HOST=$(echo $RESP | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['host'])")
+  echo "$(date '+%H:%M:%S')  version=$VERSION  host=$HOST"
+  sleep 2
+done
+```
+
+Você verá linhas como:
+```
+14:32:01  version=1.0.0  host=ip-10-0-1-42
+14:32:03  version=1.0.0  host=ip-10-0-2-17
+14:32:05  version=1.0.0  host=ip-10-0-1-42
+```
+
+**Passo 2 — Em outro terminal, faça a mudança e o push:**
+
+Edite `orders-service/main.py` e mude o valor default da versão:
+```python
+# linha 76 — mude de "1.0.0" para "2.0.0"
+"version": os.environ.get("APP_VERSION", "2.0.0"),
+```
+
+```bash
+git add orders-service/main.py
+git commit -m "bump version to 2.0.0"
+git push
+```
+
+**Passo 3 — Observe o que acontece no terminal de polling:**
+
+```
+14:35:10  version=1.0.0  host=ip-10-0-1-42   ← blue ainda ativo
+14:35:12  version=1.0.0  host=ip-10-0-2-17
+  ... (pipeline rodando: ~2min build + deploy)
+14:37:44  version=2.0.0  host=ip-10-0-3-88   ← traffic shift: tudo vai pro green
+14:37:46  version=2.0.0  host=ip-10-0-4-11
+14:37:48  version=2.0.0  host=ip-10-0-3-88
+  ... (bake time: 5 minutos com 100% no green)
+14:42:51  version=2.0.0  host=ip-10-0-3-88   ← tasks blue encerradas
+```
+
+O que está acontecendo por baixo:
+- **Build (~2min)**: CodeBuild builda a imagem `2.0.0` e sobe no ECR
+- **Green tasks sobem**: ECS cria novas tasks com a imagem nova no Target Group Green
+- **Traffic shift**: no momento que as tasks green passam no health check, o ALB vira 100% para o Green (corte instantâneo — você vê no polling)
+- **Bake time (5min)**: ambas as versões estão rodando, mas só o green recebe tráfego
+- **Cleanup**: tasks blue são encerradas automaticamente
+
+> Para fazer rollback manual durante o bake time:
+> ```bash
+> # Acesse ECS → Clusters → workshop-cluster → Services → workshop-orders-service
+> # Clique em "Deployments" → botão "Rollback"
+> ```
 
 ---
 
@@ -513,7 +554,7 @@ Monte a pipeline completa para o `inventory-service` seguindo o mesmo padrão do
 
 > **Dica 3 — Blue/Green vs Rolling:** Para usar Blue/Green nativo, o ECS Service precisa de Target Groups, Listeners e Listener Rules (igual ao orders-service). Se optar por não usar ALB no inventory-service, use **Rolling update** como deployment strategy (mais simples). A desvantagem é não ter zero-downtime garantido.
 
-> **Dica 4 — imageDetail.json:** Ao criar a pipeline, o campo "Placeholder text in the task definition" deve ser `IMAGE1_NAME` — igual ao orders-service.
+> **Dica 4 — imagedefinitions.json:** O buildspec do inventory-service precisa gerar o `imagedefinitions.json` com `"name":"inventory-service"` (não `orders-service`). Verifique o `printf` no `post_build` do buildspec.
 
 ### Verificando o sucesso
 
@@ -535,7 +576,7 @@ Após o deploy, você pode verificar que o inventory-service está consumindo a 
 | `inventory-service/main.py` | ECS | Consumer SQS: faz long polling, reserva estoque no PostgreSQL |
 | `cloudformation-db.yml` | CloudFormation | Provisiona RDS PostgreSQL + Security Group |
 | `cloudformation-infra.yml` | CloudFormation | ECR + SQS + IAM Roles + ALB + Target Groups + ECS Cluster |
-| `buildspec.yml` | CodeBuild | Login ECR, docker build do `orders-service`, docker push, gera `imageDetail.json` |
+| `buildspec.yml` | CodeBuild | Login ECR, docker build do `orders-service`, docker push, gera `imagedefinitions.json` |
 | `taskdef.json` | CodePipeline/ECS | Template da Task Definition. `<IMAGE1_NAME>` é substituído automaticamente pela URI da imagem nova |
 | `docker-compose.yml` | Local | Sobe Postgres + LocalStack (SQS) + 2 serviços para desenvolvimento local |
 
