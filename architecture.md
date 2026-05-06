@@ -7,6 +7,8 @@ sequenceDiagram
     participant Client
     participant OS as orders-service
     participant RMQ as RabbitMQ
+    participant IS as inventory-service
+    participant NS as notification-service
     participant PG as PostgreSQL
 
     Client->>OS: POST /orders
@@ -14,8 +16,11 @@ sequenceDiagram
     OS->>RMQ: fanout "orders"
     OS-->>Client: 201 Created
 
-    RMQ->>PG: inventory-service atualiza stock
-    RMQ->>PG: notification-service insere notificação
+    RMQ->>IS: queue inventory.orders
+    IS->>PG: UPDATE stock, INSERT reservation
+
+    RMQ->>NS: queue notification.orders
+    NS->>PG: INSERT notification
 ```
 
 ---
@@ -28,9 +33,10 @@ graph TD
     ALB -->|Blue/Green| OS[ECS orders-service]
     OS --> RDS[(RDS PostgreSQL)]
     OS --> MQ[RabbitMQ]
-    MQ --> IS[ECS inventory-service]
-    MQ --> NS[ECS notification-service]
-    IS & NS --> RDS
+    MQ -->|inventory.orders| IS[ECS inventory-service]
+    MQ -->|notification.orders| NS[ECS notification-service]
+    IS --> RDS
+    NS --> RDS
 
     GH([GitHub]) --> CP[CodePipeline] --> CB[CodeBuild]
     CB --> ECR[(ECR)] -.-> OS
