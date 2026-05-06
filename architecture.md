@@ -4,109 +4,51 @@
 
 ```mermaid
 sequenceDiagram
-    participant Client as HTTP Client
+    participant Client
     participant OS as orders-service
     participant RMQ as RabbitMQ
-    participant IS as inventory-service
-    participant NS as notification-service
     participant PG as PostgreSQL
 
     Client->>OS: POST /orders
-    OS->>PG: INSERT INTO orders
-    OS->>RMQ: publish fanout exchange "orders"
+    OS->>PG: INSERT order
+    OS->>RMQ: fanout "orders"
     OS-->>Client: 201 Created
 
-    RMQ->>IS: queue inventory.orders
-    IS->>PG: UPDATE stock, INSERT reservation
-
-    RMQ->>NS: queue notification.orders
-    NS->>PG: INSERT notification
+    RMQ->>PG: inventory-service atualiza stock
+    RMQ->>PG: notification-service insere notificação
 ```
 
 ---
 
-## Arquitetura local (docker-compose)
+## Infraestrutura (AWS)
 
 ```mermaid
 graph TD
-    Client([HTTP Client]) -->|POST /orders| OS
-
-    subgraph Compose
-        OS[orders-service :3001]
-        IS[inventory-service :3002]
-        NS[notification-service :3003]
-        RMQ[RabbitMQ :5672]
-        PG[(PostgreSQL :5432)]
-    end
-
-    OS -->|fanout| RMQ
-    RMQ -->|inventory.orders| IS
-    RMQ -->|notification.orders| NS
-    OS --> PG
-    IS --> PG
-    NS --> PG
-```
-
----
-
-## Arquitetura AWS
-
-```mermaid
-graph TD
-    Internet([Internet]) --> ALB[ALB :80 e :8080]
+    Internet --> ALB[ALB]
     ALB -->|Blue/Green| OS[ECS orders-service]
     OS --> RDS[(RDS PostgreSQL)]
     OS --> MQ[RabbitMQ]
     MQ --> IS[ECS inventory-service]
     MQ --> NS[ECS notification-service]
-    IS --> RDS
-    NS --> RDS
+    IS & NS --> RDS
 
-    GH([GitHub]) --> CP[CodePipeline]
-    CP --> CB[CodeBuild]
-    CB --> ECR[(ECR)]
-    CB --> CD[CodeDeploy]
-    CD --> OS
-    ECR -.-> OS
+    GH([GitHub]) --> CP[CodePipeline] --> CB[CodeBuild]
+    CB --> ECR[(ECR)] -.-> OS
+    CB --> CD[CodeDeploy] --> OS
 ```
 
 ---
 
-## Tabelas do banco
+## Tabelas
 
 ```mermaid
 erDiagram
-    orders {
-        varchar id PK
-        varchar product
-        int quantity
-        varchar customer
-        varchar status
-        timestamptz created_at
-    }
-    stock {
-        varchar product PK
-        int quantity
-    }
-    reservations {
-        serial id PK
-        varchar order_id
-        varchar product
-        int quantity
-        varchar status
-        timestamptz processed_at
-    }
-    notifications {
-        varchar id PK
-        varchar type
-        varchar to_email
-        varchar subject
-        text body
-        varchar order_id
-        timestamptz sent_at
-    }
+    orders ||--o{ reservations : gera
+    orders ||--o{ notifications : gera
+    stock ||--o{ reservations : reserva
 
-    orders ||--o{ reservations : "gera"
-    orders ||--o{ notifications : "gera"
-    stock ||--o{ reservations : "reserva"
+    orders { varchar id PK; varchar product; int quantity; varchar customer; varchar status }
+    stock { varchar product PK; int quantity }
+    reservations { serial id PK; varchar order_id; varchar product; int quantity; varchar status }
+    notifications { varchar id PK; varchar type; varchar order_id; varchar to_email }
 ```
